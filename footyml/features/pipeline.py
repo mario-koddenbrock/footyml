@@ -85,6 +85,59 @@ class FeaturePipeline:
 
         return result
 
+    def build_upcoming(self, upcoming: pl.DataFrame) -> pl.DataFrame:
+        """Build a partial feature row for each unplayed match.
+
+        Only Elo and MarketValue features are available without match results.
+        All other columns are NaN so TabPFN can still run on the partial signal.
+
+        Returns a DataFrame with game_id + the same 154 columns as build(),
+        padded with None for unavailable features.
+        """
+        if len(upcoming) == 0:
+            return pl.DataFrame({"game_id": []})
+
+        upcoming = _ensure_competition_col(upcoming)
+        upcoming = _ensure_season_col(upcoming)
+        upcoming = _ensure_venue_type_col(upcoming)
+
+        # Elo: look up current ratings from DB (keyed by team name) and join via club names
+        elo_frame = _build_elo_from_db(upcoming, self._store)
+        # Market value: looks up player_market_values by club_id + season_id
+        mv_frame = MarketValueBuilder(self._store).build(upcoming)
+
+        result = upcoming.select("game_id")
+        for frame in (elo_frame, mv_frame):
+            if "game_id" in frame.columns:
+                dup = [c for c in frame.columns if c in result.columns and c != "game_id"]
+                if dup:
+                    frame = frame.drop(dup)
+                result = result.join(frame, on="game_id", how="left")
+
+        # Add venue_type encoding
+        venue_encoded = upcoming.select([
+            pl.col("game_id"),
+            pl.col("venue_type")
+            .replace(VENUE_TYPE_ENCODING)
+            .cast(pl.Float64)
+            .alias("venue_type_enc"),
+        ])
+        result = result.join(venue_encoded, on="game_id", how="left")
+
+        # Add diff features that can be derived from Elo + MV
+        result = _add_diff_features(result)
+
+        # Pad to the full 154-column schema (other columns become null/NaN)
+        full_cols = _get_full_feature_columns(self._store)
+        for col in full_cols:
+            if col not in result.columns and col != "game_id":
+                result = result.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
+
+        # Enforce column order: game_id first, then all feature cols in training order
+        ordered = ["game_id"] + [c for c in full_cols if c != "game_id"]
+        existing = [c for c in ordered if c in result.columns]
+        return result.select(existing)
+
 
 def _add_diff_features(df: pl.DataFrame) -> pl.DataFrame:
     """Add home−away difference columns for key feature pairs."""
@@ -132,6 +185,51 @@ def _ensure_season_col(matches: pl.DataFrame) -> pl.DataFrame:
     if "season" not in matches.columns:
         return matches.with_columns(pl.lit(0).alias("season"))
     return matches
+
+
+def _build_elo_from_db(matches: pl.DataFrame, store: DataStore) -> pl.DataFrame:
+    """Look up current Elo from elo_ratings table for each match.
+
+    The elo_ratings table is keyed by team name ("Germany", "Spain") while
+    upcoming tournament matches use fd_ IDs ("fd_759"). Resolves the mapping
+    via home_club_name / away_club_name columns.
+    """
+    from footyml.config import ELO_INITIAL
+
+    elo_df = store.get_elo()
+    name_to_elo: dict[str, float] = {}
+    if len(elo_df) > 0 and "club_id" in elo_df.columns:
+        for row in elo_df.sort("date").iter_rows(named=True):
+            name_to_elo[str(row["club_id"])] = float(row["elo"])
+
+    rows = []
+    for row in matches.iter_rows(named=True):
+        home_name = str(row.get("home_club_name") or row.get("home_club_id") or "")
+        away_name = str(row.get("away_club_name") or row.get("away_club_id") or "")
+        home_elo = name_to_elo.get(home_name, ELO_INITIAL)
+        away_elo = name_to_elo.get(away_name, ELO_INITIAL)
+        rows.append({
+            "game_id":  str(row["game_id"]),
+            "home_elo": home_elo,
+            "away_elo": away_elo,
+            "elo_diff": home_elo - away_elo,
+        })
+    return pl.DataFrame(rows)
+
+
+def _get_full_feature_columns(store: DataStore) -> list[str]:
+    """Return the canonical ordered column list from the features table (or parquet fallback)."""
+    try:
+        row = store.query("SELECT * FROM features LIMIT 1")
+        if len(row) > 0:
+            return row.columns
+    except Exception:
+        pass
+    parquet = PROCESSED_DIR / "features.parquet"
+    if parquet.exists():
+        import pyarrow.parquet as pq
+        return pq.read_schema(parquet).names  # type: ignore[return-value]
+    return ["game_id"]
 
 
 def _ensure_venue_type_col(matches: pl.DataFrame) -> pl.DataFrame:
