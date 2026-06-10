@@ -332,16 +332,31 @@ class TournamentSimulator:
             gid = m.get("group_id", "")
             group_matches.setdefault(gid, []).append(m)
 
-        # Use FIFA prior as base, then adjust by any real prediction signal.
-        # When all matches fall back to equal probs (elo=1500), the derived
-        # values are near-identical so we rely entirely on the FIFA prior.
+        # Prefer historical Elo from ingest_elo_international.py parquet,
+        # fall back to FIFA ranking prior, then to model-derived signal.
+        from footyml.config import PROCESSED_DIR
+        import polars as pl
+
+        historical: dict[str, float] = {}
+        parquet_path = PROCESSED_DIR / "national_team_elo.parquet"
+        if parquet_path.exists():
+            hist_df = pl.read_parquet(parquet_path)
+            for row in hist_df.iter_rows(named=True):
+                historical[str(row["club_id"])] = float(row["elo"])
+
         derived = _derive_team_elo(group_matches)
+
         elo: dict[str, float] = {}
-        for team in derived:
-            fifa = WC2026_FIFA_ELO.get(team, ELO_INITIAL)
-            d    = derived.get(team, ELO_INITIAL)
-            # Blend: 70 % FIFA prior, 30 % model-derived signal
-            elo[team] = 0.7 * fifa + 0.3 * d
+        all_teams = set(derived) | set(historical) | set(WC2026_FIFA_ELO)
+        for team in all_teams:
+            if team in historical:
+                # Real Elo from 32 years of international match data — trust it
+                elo[team] = historical[team]
+            elif team in WC2026_FIFA_ELO:
+                # FIFA ranking prior (hardcoded)
+                elo[team] = WC2026_FIFA_ELO[team]
+            else:
+                elo[team] = derived.get(team, ELO_INITIAL)
         return group_matches, elo
 
     def _presample_group(
