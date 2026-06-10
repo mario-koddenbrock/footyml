@@ -9,10 +9,11 @@ from footyml.config import DUCKDB_PATH
 class DataStore:
     """DuckDB-backed storage for FootyML tables."""
 
-    def __init__(self, db_path: Path = DUCKDB_PATH):
+    def __init__(self, db_path: Path = DUCKDB_PATH, read_only: bool = False):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = duckdb.connect(str(db_path))
-        self._init_schema()
+        self._conn = duckdb.connect(str(db_path), read_only=read_only)
+        if not read_only:
+            self._init_schema()
 
     def _init_schema(self) -> None:
         schema_sql = (Path(__file__).parent / "schema.sql").read_text()
