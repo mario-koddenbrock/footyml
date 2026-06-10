@@ -71,6 +71,68 @@ class SimResult(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
+# FIFA ranking-based Elo prior for WC 2026 teams
+# Scaled around ELO_INITIAL=1500 (≈ average international team).
+# Source: FIFA World Rankings, approximate as of mid-2025.
+# ---------------------------------------------------------------------------
+
+WC2026_FIFA_ELO: dict[str, float] = {
+    # Elite
+    "Argentina":          1680,
+    "France":             1665,
+    "Spain":              1660,
+    "Brazil":             1645,
+    "England":            1635,
+    "Portugal":           1625,
+    "Netherlands":        1620,
+    # Strong
+    "Germany":            1615,
+    "Belgium":            1600,
+    "Colombia":           1590,
+    "Morocco":            1580,
+    "Croatia":            1575,
+    "Senegal":            1570,
+    "United States":      1565,
+    "Uruguay":            1560,
+    # Solid
+    "Mexico":             1550,
+    "Switzerland":        1545,
+    "Japan":              1540,
+    "Turkey":             1535,
+    "South Korea":        1530,
+    "Ecuador":            1525,
+    "Canada":             1520,
+    "Norway":             1515,
+    "Australia":          1510,
+    # Mid-table
+    "Sweden":             1505,
+    "Algeria":            1500,
+    "Tunisia":            1495,
+    "Ivory Coast":        1490,
+    "Ghana":              1490,
+    "Egypt":              1485,
+    "Iran":               1480,
+    "Scotland":           1480,
+    "South Africa":       1475,
+    "Czechia":            1475,
+    "Bosnia-Herzegovina": 1470,
+    "Panama":             1465,
+    "Iraq":               1460,
+    # Weaker
+    "Saudi Arabia":       1455,
+    "Uzbekistan":         1450,
+    "Jordan":             1445,
+    "Paraguay":           1445,
+    "Haiti":              1440,
+    "Curaçao":            1435,
+    "New Zealand":        1430,
+    "Qatar":              1425,
+    "Cape Verde Islands": 1420,
+    "Congo DR":           1420,
+}
+
+
+# ---------------------------------------------------------------------------
 # Elo helpers
 # ---------------------------------------------------------------------------
 
@@ -270,7 +332,16 @@ class TournamentSimulator:
             gid = m.get("group_id", "")
             group_matches.setdefault(gid, []).append(m)
 
-        elo = _derive_team_elo(group_matches)
+        # Use FIFA prior as base, then adjust by any real prediction signal.
+        # When all matches fall back to equal probs (elo=1500), the derived
+        # values are near-identical so we rely entirely on the FIFA prior.
+        derived = _derive_team_elo(group_matches)
+        elo: dict[str, float] = {}
+        for team in derived:
+            fifa = WC2026_FIFA_ELO.get(team, ELO_INITIAL)
+            d    = derived.get(team, ELO_INITIAL)
+            # Blend: 70 % FIFA prior, 30 % model-derived signal
+            elo[team] = 0.7 * fifa + 0.3 * d
         return group_matches, elo
 
     def _presample_group(
