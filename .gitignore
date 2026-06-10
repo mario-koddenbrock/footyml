@@ -229,3 +229,4 @@ data/*.duckdb.wal
 .venv/
 uv.lock
 .logs/
+/data/figures/
