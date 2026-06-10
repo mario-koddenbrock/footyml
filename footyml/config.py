@@ -12,7 +12,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 MODELS_DIR = DATA_DIR / "models"
 DUCKDB_PATH = DATA_DIR / "footyml.duckdb"
 
-TRANSFERMARKT_BASE_URL = "https://transfermarkt-api.fly.dev"
+TRANSFERMARKT_BASE_URL = os.environ.get("TRANSFERMARKT_BASE_URL", "http://localhost:8000")
 REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 3
 RETRY_WAIT_SECONDS = 2.0
