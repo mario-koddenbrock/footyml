@@ -1,11 +1,10 @@
-"""Export WC 2026 tournament figures to PNG and HTML files.
+"""Export WC 2026 tournament figures as PNG files.
 
 Reads from data/predictions/wc2026_simulation.json and generates:
   - group_standings.png   — 4×3 grid of group tables with advance %
   - bracket.png           — full knockout bracket tree
   - champion_probs.png    — top-N champion probability bar chart
   - reach_chart.png       — stacked bar chart (top 16 teams)
-  - podium.html           — interactive HTML summary
 
 Usage:
     python scripts/export_wc2026_figures.py [--out-dir data/figures] [--top 20]
@@ -13,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -56,13 +54,12 @@ except ImportError:
 
 
 def fl(name: str) -> str:
-    """Return 'FLAG Name' or just 'Name' if no flag found."""
     f = flag(name)
     return f"{f} {name}" if f else name
 
 
 # ---------------------------------------------------------------------------
-# Color helpers
+# Colors
 # ---------------------------------------------------------------------------
 
 GOLD   = "#FFD700"
@@ -70,12 +67,24 @@ SILVER = "#C0C0C0"
 BRONZE = "#CD7F32"
 GREEN  = "#2ecc71"
 BLUE   = "#3498db"
-RED    = "#e74c3c"
-DARK   = "#1a1a2e"
-MID    = "#16213e"
-LIGHT  = "#e8e8e8"
+TRANS  = "rgba(0,0,0,0)"
 
 GROUP_LETTERS = list("ABCDEFGHIJKL")
+
+_CHAMP_COLORS = [
+    (15, "#c0392b"),   # strong red — top favorites
+    (8,  "#e67e22"),   # orange
+    (4,  "#27ae60"),   # green
+    (1,  "#2980b9"),   # blue
+    (0,  "#4a5068"),   # neutral dark
+]
+
+def team_color(team: str, probs: dict) -> str:
+    p = probs.get(team, {}).get("champion", 0.0)
+    for threshold, color in _CHAMP_COLORS:
+        if p >= threshold:
+            return color
+    return "#4a5068"
 
 
 # ---------------------------------------------------------------------------
@@ -88,234 +97,325 @@ def _make_group_standings(bracket: dict, probs: dict) -> go.Figure:
     fig = sp.make_subplots(
         rows=3, cols=4,
         subplot_titles=[f"Group {g}" for g in GROUP_LETTERS],
-        vertical_spacing=0.12,
-        horizontal_spacing=0.04,
+        vertical_spacing=0.10,
+        horizontal_spacing=0.05,
     )
 
     for idx, letter in enumerate(GROUP_LETTERS):
         row = idx // 4 + 1
         col = idx % 4 + 1
         gid = f"GROUP_{letter}"
-        teams_in_group = group_standings.get(gid, [])
+        teams = group_standings.get(gid, [])
 
-        team_names   = [fl(t["team"]) for t in teams_in_group]
-        advance_pcts = [round(probs.get(t["team"], {}).get("group_advance", 0), 1) for t in teams_in_group]
-        colors = [GREEN if i < 2 else RED for i in range(len(teams_in_group))]
+        names   = [fl(t["team"]) for t in teams]
+        adv_pct = [round(probs.get(t["team"], {}).get("group_advance", 0), 1) for t in teams]
+        colors  = [GREEN if i < 2 else "#e74c3c" for i in range(len(teams))]
 
         fig.add_trace(
             go.Bar(
-                x=advance_pcts,
-                y=team_names,
-                orientation="h",
+                x=adv_pct, y=names, orientation="h",
                 marker_color=colors,
-                text=[f"{p:.0f}%" for p in advance_pcts],
+                text=[f"{p:.0f}%" for p in adv_pct],
                 textposition="outside",
                 showlegend=False,
                 hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
             ),
             row=row, col=col,
         )
-        fig.update_xaxes(range=[0, 110], showticklabels=False, row=row, col=col)
-        fig.update_yaxes(autorange="reversed", row=row, col=col)
+        fig.update_xaxes(range=[0, 115], showticklabels=False, row=row, col=col)
+        fig.update_yaxes(autorange="reversed", tickfont=dict(size=10), row=row, col=col)
 
     fig.update_layout(
-        title=dict(text="⚽ FIFA World Cup 2026 — Group Stage Advancement Probabilities", font_size=18),
-        height=750, width=1400,
-        paper_bgcolor=DARK, plot_bgcolor=MID,
-        font=dict(color=LIGHT, size=11),
-        margin=dict(t=80, b=20, l=10, r=10),
+        title=dict(text="FIFA World Cup 2026 — Group Stage Advancement Probabilities",
+                   font=dict(size=17, color="#333333")),
+        height=700, width=1400,
+        paper_bgcolor=TRANS, plot_bgcolor=TRANS,
+        font=dict(color="#333333", size=11),
+        margin=dict(t=70, b=10, l=10, r=10),
     )
-    fig.update_annotations(font=dict(color=LIGHT, size=13))
+    fig.update_annotations(font=dict(color="#333333", size=13))
     return fig
 
 
 # ---------------------------------------------------------------------------
-# Figure 2 — Bracket tree
+# Figure 2 — Bracket tree (full knockout bracket)
 # ---------------------------------------------------------------------------
 
 def _make_bracket(bracket: dict, probs: dict) -> go.Figure:
-    """Draw the full knockout bracket as a Plotly figure."""
+    """
+    Layout (horizontal, left→right for left half, right→left for right half):
+
+    Left side (paths 0 & 1):
+        R32 col → R16 col → QF col → SF col
+                                        ↓
+                                    FINAL (center)
+                                        ↑
+    Right side (paths 2 & 3):
+        R32 col → R16 col → QF col → SF col
+
+    Y layout (shared by both sides):
+        Path 0 (upper): 4 R32 matches, y ≈ 0..10
+        Path 1 (lower): 4 R32 matches, y ≈ 14..24
+        SF midpoint ≈ 12
+    """
+    paths = bracket.get("paths", [])
+
     shapes: list[dict] = []
     annotations: list[dict] = []
 
-    def _prob(team: str) -> float:
-        return probs.get(team, {}).get("champion", 0.0)
+    # ---- Y coordinate system ----
+    # Slots per side: 2 teams per match × 4 matches × 2 paths = 16 slots
+    # Within each match: home at y, away at y+1.0
+    # Between matches (same path): 0.6 gap after each pair → next match at y+2.6
+    # Between paths: 3.0 gap
 
-    def _box_color(team: str) -> str:
-        p = _prob(team)
-        if p >= 15:
-            return "#c0392b"
-        if p >= 8:
-            return "#e67e22"
-        if p >= 4:
-            return "#27ae60"
-        if p >= 1:
-            return "#2980b9"
-        return "#555577"
+    def _build_slot_ys() -> list[float]:
+        ys: list[float] = []
+        y = 0.0
+        for path_idx in range(2):
+            for match_idx in range(4):
+                ys.append(y)        # home slot
+                ys.append(y + 1.0)  # away slot
+                if match_idx < 3:
+                    y += 1.0 + 0.8  # within-path gap between matches
+                elif path_idx == 0:
+                    y += 1.0 + 3.0  # between-path gap
+        return ys
 
-    def add_box(x: float, y: float, text: str, w: float = 1.4, h: float = 0.35, color: str = "#555577") -> None:
+    slot_ys = _build_slot_ys()
+
+    # R32 match midpoints (8 per side)
+    r32_y = [(slot_ys[2*i] + slot_ys[2*i + 1]) / 2 for i in range(8)]
+
+    # R16 midpoints: pairs of R32 midpoints (4 per side)
+    r16_y = [(r32_y[2*i] + r32_y[2*i + 1]) / 2 for i in range(4)]
+
+    # QF midpoints: pairs of R16 midpoints (2 per side)
+    qf_y = [(r16_y[2*i] + r16_y[2*i + 1]) / 2 for i in range(2)]
+
+    # SF midpoint
+    sf_y = (qf_y[0] + qf_y[1]) / 2
+
+    MAX_Y = slot_ys[-1] + 1.5  # figure height
+
+    # ---- X positions (left side; right side is mirrored) ----
+    BW = 1.40   # box half-width
+    BH = 0.36   # box half-height (winner boxes)
+    TEAM_BH = 0.30  # box half-height (R32 individual team rows)
+
+    COL_SPACING = 3.8
+    X_L_R32 = BW + 0.1                  # ~1.5
+    X_L_R16 = X_L_R32 + COL_SPACING     # ~5.3
+    X_L_QF  = X_L_R16 + COL_SPACING     # ~9.1
+    X_L_SF  = X_L_QF  + COL_SPACING     # ~12.9
+    X_FIN   = X_L_SF  + COL_SPACING     # ~16.7 (center)
+    X_R_SF  = X_FIN   + COL_SPACING     # ~20.5
+    X_R_QF  = X_R_SF  + COL_SPACING     # ~24.3
+    X_R_R16 = X_R_QF  + COL_SPACING     # ~28.1
+    X_R_R32 = X_R_R16 + COL_SPACING     # ~31.9
+
+    TOTAL_W = X_R_R32 + BW + 0.1
+
+    def add_box(x: float, y: float, label: str,
+                bw: float = BW, bh: float = BH,
+                fill: str = "#4a5068", border: str = "#888888",
+                fsize: int = 9, bold: bool = False) -> None:
         shapes.append(dict(
-            type="rect",
-            x0=x - w / 2, y0=y - h / 2,
-            x1=x + w / 2, y1=y + h / 2,
-            line=dict(color="#aaaaaa", width=1),
-            fillcolor=color,
-            layer="below",
+            type="rect", x0=x - bw, y0=y - bh, x1=x + bw, y1=y + bh,
+            line=dict(color=border, width=1), fillcolor=fill, layer="below",
         ))
+        text = f"<b>{label}</b>" if bold else label
         annotations.append(dict(
-            x=x, y=y, text=text,
-            showarrow=False,
-            font=dict(color="white", size=8),
+            x=x, y=y, text=text, showarrow=False,
+            font=dict(color="white", size=fsize),
             xanchor="center", yanchor="middle",
         ))
 
-    def add_line(x0: float, y0: float, x1: float, y1: float) -> None:
+    def add_line(x0: float, y0: float, x1: float, y1: float,
+                 color: str = "#aaaaaa", width: float = 1.0) -> None:
         shapes.append(dict(
-            type="line",
-            x0=x0, y0=y0, x1=x1, y1=y1,
-            line=dict(color="#aaaaaa", width=1),
+            type="line", x0=x0, y0=y0, x1=x1, y1=y1,
+            line=dict(color=color, width=width),
         ))
 
-    # ---- Layout constants ------------------------------------------------
-    # X: left side  path 1→0..4.5, path 2→4.5..9 | right side path3→11..15.5, path4→15.5..20
-    # Y: 12 slots in R32 per path, spacing 1.0
+    def connect_left(x_from: float, y_a: float, y_b: float, x_to: float) -> None:
+        """Connect two boxes at (x_from, y_a) and (x_from, y_b) to one box at (x_to, midpoint)."""
+        y_mid = (y_a + y_b) / 2
+        jx = (x_from + BW + x_to - BW) / 2
+        add_line(x_from + BW, y_a, jx, y_a)
+        add_line(x_from + BW, y_b, jx, y_b)
+        add_line(jx, y_a, jx, y_b)
+        add_line(jx, y_mid, x_to - BW, y_mid)
 
-    paths = bracket.get("paths", [])
+    def connect_right(x_from: float, y_a: float, y_b: float, x_to: float) -> None:
+        """Right-side version: boxes at x_from connect leftward to box at x_to."""
+        y_mid = (y_a + y_b) / 2
+        jx = (x_from - BW + x_to + BW) / 2
+        add_line(x_from - BW, y_a, jx, y_a)
+        add_line(x_from - BW, y_b, jx, y_b)
+        add_line(jx, y_a, jx, y_b)
+        add_line(jx, y_mid, x_to + BW, y_mid)
 
-    def _draw_path(path: dict, x_r32: float, x_r16: float, x_qf: float, direction: int) -> tuple[str, float]:
-        """Draw one path's R32/R16/QF. direction: +1=left side, -1=right side."""
-        r32 = path.get("r32", [])
-        r16 = path.get("r16", [])
-        qf  = path.get("qf") or {}
+    # ---- Draw one bracket side ----
+    def draw_side(path0: dict, path1: dict, side: str) -> None:
+        is_left = (side == "left")
+        x_r32 = X_L_R32 if is_left else X_R_R32
+        x_r16 = X_L_R16 if is_left else X_R_R16
+        x_qf  = X_L_QF  if is_left else X_R_QF
+        x_sf  = X_L_SF  if is_left else X_R_SF
+        connect = connect_left if is_left else connect_right
 
-        # R32 — 8 matches → 16 teams in 8 pairs
-        r32_y: list[float] = []
-        for i, m in enumerate(r32):
-            y_top = i * 2.5 + 1.25
-            y_bot = y_top + 1.0
-            mid_y = (y_top + y_bot) / 2
-            for team, y in [(m.get("home", ""), y_top), (m.get("away", ""), y_bot)]:
-                add_box(x_r32, y, fl(team), color=_box_color(team))
-            # bracket line to R16
-            add_line(x_r32 + direction * 0.7, y_top, x_r32 + direction * 0.7, y_bot)
-            add_line(x_r32 + direction * 0.7, mid_y, x_r32 + direction * 1.4, mid_y)
-            r32_y.append(mid_y)
+        for path_idx, path in enumerate([path0, path1]):
+            r32_matches = path.get("r32", [])
+            r16_matches = path.get("r16", [])
+            qf_match    = path.get("qf") or {}
+            groups_label = "  ".join(g.replace("GROUP_", "") for g in path.get("groups", []))
 
-        # R16 — 4 matches
-        r16_y: list[float] = []
-        for i, m in enumerate(r16):
-            if i * 2 + 1 >= len(r32_y):
-                break
-            y1 = r32_y[i * 2]
-            y2 = r32_y[i * 2 + 1]
-            mid_y = (y1 + y2) / 2
-            winner = m.get("winner", "")
-            add_box(x_r16, mid_y, fl(winner), color=_box_color(winner))
-            add_line(x_r16 + direction * 0.7, y1, x_r16 + direction * 0.7, y2)
-            add_line(x_r16 + direction * 0.7, mid_y, x_r16 + direction * 1.4, mid_y)
-            r16_y.append(mid_y)
+            # Path label (small, centered on the path's y range)
+            path_start = slot_ys[path_idx * 8]
+            path_end   = slot_ys[path_idx * 8 + 7]
+            path_mid   = (path_start + path_end) / 2
+            x_label = (x_r32 - BW - 0.1) if is_left else (x_r32 + BW + 0.1)
+            annotations.append(dict(
+                x=x_label, y=path_mid,
+                text=f"<b>Groups<br>{groups_label}</b>",
+                showarrow=False, textangle=-90 if is_left else 90,
+                font=dict(color="#666666", size=8),
+                xanchor="center", yanchor="middle",
+            ))
 
-        # QF
-        qf_y: float | None = None
-        if r16_y:
-            qf_winner = qf.get("winner", "")
-            if len(r16_y) >= 2:
-                qf_y = (r16_y[0] + r16_y[-1]) / 2
-            else:
-                qf_y = r16_y[0]
-            add_box(x_qf, qf_y, fl(qf_winner), color=_box_color(qf_winner))
-            if len(r16_y) >= 2:
-                add_line(x_qf + direction * 0.7, r16_y[0], x_qf + direction * 0.7, r16_y[-1])
-                add_line(x_qf + direction * 0.7, qf_y, x_qf + direction * 1.4, qf_y)
+            # ---- R32: 4 matches per path, each with home+away team rows ----
+            for mi, m in enumerate(r32_matches[:4]):
+                global_mi = path_idx * 4 + mi
+                home = m.get("home", "?")
+                away = m.get("away", "?")
+                winner = m.get("winner", "")
 
-        return (qf.get("winner", ""), qf_y if qf_y is not None else 10.0)
+                y_home = slot_ys[global_mi * 2]
+                y_away = slot_ys[global_mi * 2 + 1]
 
-    # Left side: paths 0 and 1
-    # Right side: paths 2 and 3
-    # Center: SF, Final, Champion
+                home_fill = team_color(home, probs) if home == winner else "#2c2c40"
+                away_fill = team_color(away, probs) if away == winner else "#2c2c40"
 
-    sf_ys: list[tuple[str, float]] = []
+                add_box(x_r32, y_home, fl(home), bw=BW, bh=TEAM_BH, fill=home_fill, fsize=8,
+                        border="#888888" if home == winner else "#555566")
+                add_box(x_r32, y_away, fl(away), bw=BW, bh=TEAM_BH, fill=away_fill, fsize=8,
+                        border="#888888" if away == winner else "#555566")
 
-    # --- Left side ---
-    x_offsets_left  = [(0.8, 3.0, 5.2), (7.0, 9.2, 11.4)]
-    x_offsets_right = [(20.0, 17.8, 15.6), (12.4, 14.6, 16.8)]
+                # Bracket connector from winner row to junction for R16
+                winner_y = y_home if home == winner else y_away
+                jx_r32_r16 = (x_r32 + BW + x_r16 - BW) / 2
+                if is_left:
+                    add_line(x_r32 + BW, winner_y, jx_r32_r16, winner_y)
+                else:
+                    add_line(x_r32 - BW, winner_y, jx_r32_r16, winner_y)
 
-    for pi, (x32, x16, xqf) in enumerate(x_offsets_left):
-        if pi < len(paths):
-            w, wy = _draw_path(paths[pi], x32, x16, xqf, +1)
-            sf_ys.append((w, wy))
+            # ---- R16: 2 matches per path ----
+            for mi, m in enumerate(r16_matches[:2]):
+                global_mi = path_idx * 2 + mi
+                winner = m.get("winner", "")
+                y = r16_y[global_mi]
+                add_box(x_r16, y, fl(winner), fill=team_color(winner, probs), fsize=9)
 
-    for pi, (x32, x16, xqf) in enumerate(x_offsets_right):
-        actual_pi = pi + 2
-        if actual_pi < len(paths):
-            w, wy = _draw_path(paths[actual_pi], x32, x16, xqf, -1)
-            sf_ys.append((w, wy))
+                # Vertical bracket line gathering the two R32 winners
+                i_a = global_mi * 2
+                i_b = global_mi * 2 + 1
+                y_a_r32 = r32_y[i_a]
+                y_b_r32 = r32_y[i_b]
+                jx = (x_r32 + BW + x_r16 - BW) / 2 if is_left else (x_r32 - BW + x_r16 + BW) / 2
+                add_line(jx, y_a_r32, jx, y_b_r32)
+                add_line(jx, y, x_r16 - BW if is_left else x_r16 + BW, y)
 
-    # --- Semifinals ---
-    x_sf = 10.4
-    sf1 = bracket.get("sf1") or {}
-    sf2 = bracket.get("sf2") or {}
+            # ---- QF ----
+            qf_winner = qf_match.get("winner", "")
+            y = qf_y[path_idx]
+            add_box(x_qf, y, fl(qf_winner), fill=team_color(qf_winner, probs), fsize=10, bh=BH + 0.04)
+            connect(x_r16, r16_y[path_idx * 2], r16_y[path_idx * 2 + 1], x_qf)
 
-    sf1_y = (sf_ys[0][1] + sf_ys[1][1]) / 2 if len(sf_ys) >= 2 else 10.0
-    sf2_y = (sf_ys[2][1] + sf_ys[3][1]) / 2 if len(sf_ys) >= 4 else 10.0
+        # ---- SF box (where path0 QF winner meets path1 QF winner) ----
+        sf_match = bracket.get("sf1") if is_left else bracket.get("sf2")
+        sf_match = sf_match or {}
+        sf_winner = sf_match.get("winner", "")
+        add_box(x_sf, sf_y, fl(sf_winner), fill=team_color(sf_winner, probs),
+                bh=BH + 0.06, fsize=11, bold=True)
+        connect(x_qf, qf_y[0], qf_y[1], x_sf)
 
-    add_box(x_sf, sf1_y, fl(sf1.get("winner", "")), w=1.8, color=_box_color(sf1.get("winner", "")))
-    add_box(x_sf, sf2_y, fl(sf2.get("winner", "")), w=1.8, color=_box_color(sf2.get("winner", "")))
+        # Horizontal line from SF to Final
+        if is_left:
+            add_line(x_sf + BW, sf_y, X_FIN - BW, sf_y, color="#dddddd", width=1.5)
+        else:
+            add_line(x_sf - BW, sf_y, X_FIN + BW, sf_y, color="#dddddd", width=1.5)
 
-    # Lines: QF left → SF
-    if len(sf_ys) >= 2:
-        add_line(x_sf - 0.9, sf_ys[0][1], x_sf - 0.9, sf_ys[1][1])
-        add_line(x_sf - 0.9, sf1_y, x_sf - 1.6, sf1_y)
-    if len(sf_ys) >= 4:
-        add_line(x_sf + 0.9, sf_ys[2][1], x_sf + 0.9, sf_ys[3][1])
-        add_line(x_sf + 0.9, sf2_y, x_sf + 1.6, sf2_y)
+    # ---- Draw both sides ----
+    if len(paths) >= 2:
+        draw_side(paths[0], paths[1], "left")
+    if len(paths) >= 4:
+        draw_side(paths[2], paths[3], "right")
 
-    # --- Final ---
+    # ---- Final ----
     final = bracket.get("final") or {}
-    fin_y = (sf1_y + sf2_y) / 2
-    add_line(x_sf - 0.9, sf1_y, x_sf - 0.9, fin_y)
-    add_line(x_sf - 0.9, fin_y, x_sf - 0.0, fin_y)
-    add_line(x_sf + 0.9, sf2_y, x_sf + 0.9, fin_y)
-    add_line(x_sf + 0.9, fin_y, x_sf + 0.0, fin_y)
-
+    home_f = final.get("home", "")
+    away_f = final.get("away", "")
     champion = bracket.get("champion", "")
-    finalist = bracket.get("finalist", "")
 
-    # Show both finalist and champion
-    add_box(x_sf, fin_y + 1.2, fl(finalist), w=1.8, h=0.4, color=_box_color(finalist))
-    add_box(x_sf, fin_y - 1.2, fl(finalist[:6] + "…" if len(finalist) > 10 else finalist), w=1.8, h=0.4, color=_box_color(finalist))
+    # Show both finalists as small boxes flanking the Final label
+    add_box(X_FIN, sf_y + 0.72, fl(home_f), bw=BW, bh=TEAM_BH,
+            fill=team_color(home_f, probs), fsize=9, border="#dddddd")
+    add_box(X_FIN, sf_y - 0.72, fl(away_f), bw=BW, bh=TEAM_BH,
+            fill=team_color(away_f, probs), fsize=9, border="#dddddd")
 
-    # Champion box (gold)
-    add_box(x_sf, fin_y, f"🏆 {fl(champion)}", w=2.4, h=0.6, color="#8B7500")
+    # Champion box
+    add_box(X_FIN, sf_y, f"🏆  {fl(champion)}", bw=BW + 0.35, bh=BH * 0.6,
+            fill="#7a5c00", border=GOLD, fsize=12, bold=True)
 
-    # 3rd place
-    third_match = bracket.get("third_place") or {}
-    third = bracket.get("third", "")
-    add_box(x_sf, fin_y - 2.8, f"3rd: {fl(third)}", w=2.0, h=0.4, color=BRONZE)
-
-    # Annotations for rounds
-    for label, xpos in [("R32", 0.8), ("R16", 3.0), ("QF", 5.2),
-                         ("R32", 20.0), ("R16", 17.8), ("QF", 15.6),
-                         ("R32", 7.0), ("R16", 9.2), ("SF/QF", 10.4),
-                         ("R32", 12.4), ("R16", 14.6), ("QF", 16.8)]:
+    # ---- Round labels (top) ----
+    label_y = MAX_Y + 0.8
+    for label, x in [
+        ("R32", X_L_R32), ("R16", X_L_R16), ("QF", X_L_QF), ("SF", X_L_SF),
+        ("FINAL", X_FIN),
+        ("SF", X_R_SF), ("QF", X_R_QF), ("R16", X_R_R16), ("R32", X_R_R32),
+    ]:
+        is_final_col = label == "FINAL"
         annotations.append(dict(
-            x=xpos, y=-0.5, text=f"<b>{label}</b>",
-            showarrow=False, font=dict(color="#aaaaaa", size=9),
-            xanchor="center",
+            x=x, y=label_y, text=f"<b>{label}</b>",
+            showarrow=False,
+            font=dict(color=GOLD if is_final_col else "#888888", size=11 if is_final_col else 10),
+            xanchor="center", yanchor="bottom",
         ))
+
+    # ---- 3rd place ----
+    third = bracket.get("third", "")
+    third_y = -2.5
+    add_box(X_FIN, third_y, f"3rd  {fl(third)}", bw=BW, bh=BH * 0.8,
+            fill="#5a3e1b", border=BRONZE, fsize=10, bold=True)
+    annotations.append(dict(
+        x=X_FIN, y=third_y - BH - 0.5,
+        text="<b>3rd Place</b>",
+        showarrow=False, font=dict(color="#888888", size=9),
+        xanchor="center", yanchor="top",
+    ))
+
+    # ---- Title ----
+    annotations.append(dict(
+        x=X_FIN, y=label_y + 1.2,
+        text="<b>FIFA World Cup 2026 — Most Likely Bracket</b>",
+        showarrow=False,
+        font=dict(color="#333333", size=16),
+        xanchor="center", yanchor="bottom",
+    ))
 
     fig = go.Figure()
     fig.update_layout(
         shapes=shapes,
         annotations=annotations,
-        title=dict(text="⚽ FIFA World Cup 2026 — Most Likely Bracket", font_size=18),
-        xaxis=dict(range=[-0.5, 21.5], showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(range=[-2, 22], showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", scaleratio=0.8),
-        height=900, width=1600,
-        paper_bgcolor=DARK,
-        plot_bgcolor=DARK,
-        font=dict(color=LIGHT),
-        margin=dict(t=60, b=30, l=10, r=10),
+        xaxis=dict(range=[-1.5, TOTAL_W + 1.5], showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(range=[third_y - 2, label_y + 2.5], showgrid=False, zeroline=False,
+                   showticklabels=False, scaleanchor="x", scaleratio=0.9),
+        height=1000, width=1800,
+        paper_bgcolor=TRANS,
+        plot_bgcolor=TRANS,
+        font=dict(color="#333333"),
+        margin=dict(t=20, b=20, l=10, r=10),
     )
     return fig
 
@@ -328,7 +428,8 @@ def _make_champion_chart(probs: dict, top: int = 20) -> go.Figure:
     teams_sorted = sorted(probs.items(), key=lambda x: -x[1].get("champion", 0))[:top]
     names  = [fl(t) for t, _ in teams_sorted]
     champ  = [v.get("champion", 0) for _, v in teams_sorted]
-    colors = [GOLD if i == 0 else SILVER if i == 1 else BRONZE if i == 2 else BLUE for i in range(len(names))]
+    colors = [GOLD if i == 0 else SILVER if i == 1 else BRONZE if i == 2
+              else team_color(t, probs) for i, (t, _) in enumerate(teams_sorted)]
 
     fig = go.Figure(go.Bar(
         x=champ, y=names, orientation="h",
@@ -338,12 +439,14 @@ def _make_champion_chart(probs: dict, top: int = 20) -> go.Figure:
         hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        title=dict(text=f"⚽ WC 2026 — Champion Probability (Top {top})", font_size=18),
-        xaxis=dict(title="Probability (%)", range=[0, max(champ) * 1.2]),
-        yaxis=dict(autorange="reversed"),
+        title=dict(text=f"FIFA World Cup 2026 — Champion Probability (Top {top})",
+                   font=dict(size=17, color="#333333")),
+        xaxis=dict(title="Champion probability (%)", range=[0, max(champ) * 1.22],
+                   color="#333333"),
+        yaxis=dict(autorange="reversed", color="#333333"),
         height=max(400, top * 28), width=900,
-        paper_bgcolor=DARK, plot_bgcolor=MID,
-        font=dict(color=LIGHT, size=12),
+        paper_bgcolor=TRANS, plot_bgcolor=TRANS,
+        font=dict(color="#333333", size=12),
         margin=dict(t=60, b=40, l=160, r=80),
     )
     return fig
@@ -357,45 +460,40 @@ def _make_reach_chart(probs: dict, top: int = 16) -> go.Figure:
     teams_sorted = sorted(probs.items(), key=lambda x: -x[1].get("champion", 0))[:top]
     names = [fl(t) for t, _ in teams_sorted]
 
-    stages = [
-        ("Champion",      "champion",      GOLD),
-        ("Finalist",      "finalist",      SILVER),
-        ("Top 4",         "top4",          BLUE),
-        ("Top 8",         "top8",          GREEN),
-        ("Group Advance", "group_advance", "#888888"),
-    ]
+    stages_ordered = ["champion", "finalist", "top4", "top8", "group_advance"]
+    stage_labels   = ["Champion", "Finalist", "Top 4", "Top 8", "Group exit"]
+    stage_colors   = [GOLD, SILVER, BLUE, GREEN, "#aaaaaa"]
 
     fig = go.Figure()
-    prev = {t: 0.0 for t, _ in teams_sorted}
 
-    # Cumulative → differential
-    cum_keys = ["group_advance", "top8", "top4", "finalist", "champion"]
-    cum_keys_rev = list(reversed(cum_keys))
+    # Build incremental (differential) values per stage
+    # Stages are cumulative (champion ⊂ finalist ⊂ top4 ⊂ top8 ⊂ group_advance)
+    # Draw from bottom stage upward so stacking looks right
+    prev_vals = [0.0] * len(teams_sorted)
 
-    for label, key, color in reversed(stages):
-        vals = [probs.get(t, {}).get(key, 0) for t, _ in teams_sorted]
-        # subtract higher round to get incremental bar
-        if key != "group_advance":
-            higher_key = cum_keys_rev[cum_keys_rev.index(key) - 1] if cum_keys_rev.index(key) > 0 else None
-            if higher_key:
-                higher_vals = [probs.get(t, {}).get(higher_key, 0) for t, _ in teams_sorted]
-                vals = [max(0.0, v - h) for v, h in zip(vals, higher_vals)]
-
+    for stage, label, color in zip(
+        reversed(stages_ordered), reversed(stage_labels), reversed(stage_colors)
+    ):
+        cum_vals = [probs.get(t, {}).get(stage, 0) for t, _ in teams_sorted]
+        incremental = [max(0.0, c - p) for c, p in zip(cum_vals, prev_vals)]
         fig.add_trace(go.Bar(
-            x=vals, y=names, orientation="h",
+            x=incremental, y=names, orientation="h",
             name=label, marker_color=color,
             hovertemplate=f"{label}: %{{x:.1f}}%<extra></extra>",
         ))
+        prev_vals = cum_vals
 
     fig.update_layout(
         barmode="stack",
-        title=dict(text=f"⚽ WC 2026 — Tournament Reach Probabilities (Top {top})", font_size=18),
-        xaxis=dict(title="Probability (%)", range=[0, 105]),
-        yaxis=dict(autorange="reversed"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        title=dict(text=f"FIFA World Cup 2026 — Tournament Reach Probabilities (Top {top})",
+                   font=dict(size=17, color="#333333")),
+        xaxis=dict(title="Probability (%)", range=[0, 105], color="#333333"),
+        yaxis=dict(autorange="reversed", color="#333333"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(color="#333333")),
         height=max(400, top * 30), width=1000,
-        paper_bgcolor=DARK, plot_bgcolor=MID,
-        font=dict(color=LIGHT, size=12),
+        paper_bgcolor=TRANS, plot_bgcolor=TRANS,
+        font=dict(color="#333333", size=12),
         margin=dict(t=80, b=40, l=160, r=20),
     )
     return fig
@@ -410,10 +508,9 @@ def main(
     out_dir: Path = typer.Option(Path("data/figures"), "--out-dir"),
     sim_file: Path = typer.Option(Path("data/predictions/wc2026_simulation.json"), "--sim"),
     top: int = typer.Option(20, "--top", help="Top N teams for champion/reach charts"),
-    png: bool = typer.Option(True, "--png/--no-png", help="Export PNG (requires kaleido)"),
-    html: bool = typer.Option(True, "--html/--no-html", help="Export interactive HTML"),
+    scale: int = typer.Option(2, "--scale", help="PNG scale factor (2 = 2× pixel density)"),
 ) -> None:
-    console.rule("[bold]WC 2026 Figure Export")
+    console.rule("[bold]WC 2026 Figure Export (PNG)")
 
     if not sim_file.exists():
         console.print(f"[red]Simulation file not found: {sim_file}[/red]")
@@ -436,21 +533,14 @@ def main(
     }
 
     for name, fig in figures.items():
-        if html:
-            path = out_dir / f"{name}.html"
-            fig.write_html(str(path), include_plotlyjs="cdn", full_html=True)
+        path = out_dir / f"{name}.png"
+        try:
+            fig.write_image(str(path), scale=scale)
             console.print(f"  [green]✓[/green] {path}")
+        except Exception as e:
+            console.print(f"  [red]✗ {name}.png failed: {e}[/red]")
 
-        if png:
-            path = out_dir / f"{name}.png"
-            try:
-                fig.write_image(str(path), scale=2)
-                console.print(f"  [green]✓[/green] {path}")
-            except Exception as e:
-                console.print(f"  [yellow]PNG skipped ({e.__class__.__name__}: {e})[/yellow]")
-                console.print("  Install kaleido: uv add kaleido")
-
-    console.rule(f"[bold green]Done — {len(figures)} figures exported to {out_dir}/")
+    console.rule(f"[bold green]Done — {len(figures)} PNGs exported to {out_dir}/")
 
 
 if __name__ == "__main__":
