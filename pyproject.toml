@@ -24,6 +24,7 @@ dependencies = [
     "pyarrow>=16.0",
     "python-dotenv>=1.0",
     "ipykernel>=7.2.0",
+    "countryflag>=1.1.1",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,8 @@ dev = [
 ]
 notebooks = [
     "jupyterlab>=4.0",
+    "nbformat>=5.10",
+    "ipywidgets>=8.0",
     "itables>=2.0",
 ]
 dashboard = [
