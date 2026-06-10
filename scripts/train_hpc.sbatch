@@ -27,8 +27,7 @@ echo "============================================================"
 source ~/.bashrc
 export PATH="$HOME/.local/bin:$PATH"   # ensure uv is on PATH
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-cd "$SCRIPT_DIR/.."
+cd "$HOME/workspace/footyml"
 
 echo "==> Installing dependencies with uv ..."
 uv sync --extra dev
