@@ -25,6 +25,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "ipykernel>=7.2.0",
     "countryflag>=1.1.1",
+    "matplotlib>=3.10.9",
 ]
 
 [project.optional-dependencies]
