@@ -455,6 +455,265 @@ def _make_champion_chart(probs: dict, top: int = 20) -> go.Figure:
 # ---------------------------------------------------------------------------
 # Figure 4 — Reach chart (stacked bars)
 # ---------------------------------------------------------------------------
+# (see below)
+
+# ---------------------------------------------------------------------------
+# Figure 5 — Podium (top 3 without probabilities)
+# ---------------------------------------------------------------------------
+
+def _make_podium(bracket: dict) -> go.Figure:
+    """Classic podium — champion, finalist, 3rd place. No numbers."""
+    champion = bracket.get("champion", "")
+    finalist = bracket.get("finalist", "")
+    third    = bracket.get("third", "")
+
+    shapes: list[dict] = []
+    anns: list[dict] = []
+
+    # Podium block positions: 2nd left, 1st center, 3rd right
+    # x centers at 2.0, 5.5, 9.0 — y from 0 up to block height
+    PODIUM = [
+        # (x_center, block_top, fill, border, medal, label, team)
+        (2.0, 2.2, "#c0c0c0", "#a0a0a0", "🥈", "Runner-up",      finalist),
+        (5.5, 3.6, "#ffd700", "#c8a800", "🥇", "World Champion",  champion),
+        (9.0, 1.4, "#cd7f32", "#a0621a", "🥉", "Third Place",     third),
+    ]
+
+    BLOCK_W = 1.8  # half-width of each podium block
+    FLOOR_Y = 0.0
+
+    for x, top, fill, border, medal, label, team in PODIUM:
+        # Podium block
+        shapes.append(dict(
+            type="rect",
+            x0=x - BLOCK_W, y0=FLOOR_Y,
+            x1=x + BLOCK_W, y1=top,
+            fillcolor=fill,
+            line=dict(color=border, width=2),
+            layer="below",
+        ))
+        # Rank number inside the block
+        rank_num = {"🥇": "1", "🥈": "2", "🥉": "3"}[medal]
+        anns.append(dict(
+            x=x, y=top / 2, text=f"<b>{rank_num}</b>",
+            showarrow=False, font=dict(size=38, color="rgba(255,255,255,0.35)"),
+            xanchor="center", yanchor="middle",
+        ))
+        # Flag + team name above block
+        f = flag(team)
+        anns.append(dict(
+            x=x, y=top + 0.25, text=f"<b>{f}</b>" if f else "",
+            showarrow=False, font=dict(size=48),
+            xanchor="center", yanchor="bottom",
+        ))
+        anns.append(dict(
+            x=x, y=top + 1.15, text=f"<b>{team}</b>",
+            showarrow=False, font=dict(size=20, color="#222222"),
+            xanchor="center", yanchor="bottom",
+        ))
+        anns.append(dict(
+            x=x, y=top + 1.6, text=label,
+            showarrow=False, font=dict(size=12, color="#666666"),
+            xanchor="center", yanchor="bottom",
+        ))
+        # Medal emoji above name
+        anns.append(dict(
+            x=x, y=top + 1.85, text=medal,
+            showarrow=False, font=dict(size=20),
+            xanchor="center", yanchor="bottom",
+        ))
+
+    # Title
+    anns.append(dict(
+        x=5.5, y=6.2, text="<b>FIFA World Cup 2026</b>",
+        showarrow=False, font=dict(size=26, color="#111111"),
+        xanchor="center", yanchor="bottom",
+    ))
+    anns.append(dict(
+        x=5.5, y=5.75, text="Final Standings",
+        showarrow=False, font=dict(size=14, color="#888888"),
+        xanchor="center", yanchor="bottom",
+    ))
+
+    fig = go.Figure()
+    fig.update_layout(
+        shapes=shapes, annotations=anns,
+        xaxis=dict(range=[0, 11], showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(range=[-0.4, 7.0], showgrid=False, zeroline=False, showticklabels=False,
+                   scaleanchor="x", scaleratio=0.6),
+        height=600, width=900,
+        paper_bgcolor=TRANS, plot_bgcolor=TRANS,
+        margin=dict(t=20, b=20, l=20, r=20),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 6 — Group overview (all 12 groups, clean table layout, no probabilities)
+# ---------------------------------------------------------------------------
+
+def _make_group_overview(bracket: dict) -> go.Figure:
+    """12-group overview grid: team rank, flag, name. Top 2 highlighted."""
+    group_standings = bracket["group_standings"]
+
+    # Row colors by rank
+    ROW_COLORS = {
+        1: "#1a6b3a",   # dark green — advances directly
+        2: "#1a6b3a",   # dark green — advances directly
+        3: "#7a5c00",   # amber — potential wild card
+        4: "#5a1a1a",   # dark red — eliminated
+    }
+    ROW_BORDERS = {1: "#2ecc71", 2: "#2ecc71", 3: "#f39c12", 4: "#c0392b"}
+
+    shapes: list[dict] = []
+    anns: list[dict] = []
+
+    # Card layout: 4 columns × 3 rows
+    CARD_W  = 4.8
+    CARD_H  = 5.8   # header + 4 rows
+    COL_GAP = 0.4
+    ROW_GAP = 0.6
+    HEADER_H = 0.85
+    ROW_H    = (CARD_H - HEADER_H) / 4  # ~1.24
+
+    TOTAL_W = 4 * CARD_W + 3 * COL_GAP
+    TOTAL_H = 3 * CARD_H + 2 * ROW_GAP
+
+    for idx, letter in enumerate(GROUP_LETTERS):
+        col = idx % 4
+        row = idx // 4
+        # Card origin (top-left), y inverted (y=0 at top)
+        card_x = col * (CARD_W + COL_GAP)
+        card_y = TOTAL_H - row * (CARD_H + ROW_GAP)  # top y of this card
+
+        gid = f"GROUP_{letter}"
+        teams = group_standings.get(gid, [])
+
+        # Card background
+        shapes.append(dict(
+            type="rect",
+            x0=card_x, y0=card_y - CARD_H,
+            x1=card_x + CARD_W, y1=card_y,
+            fillcolor="rgba(240,244,255,0.7)",
+            line=dict(color="#cccccc", width=1),
+            layer="below",
+        ))
+
+        # Group header
+        shapes.append(dict(
+            type="rect",
+            x0=card_x, y0=card_y - HEADER_H,
+            x1=card_x + CARD_W, y1=card_y,
+            fillcolor="#1a2744",
+            line=dict(color="#1a2744", width=0),
+            layer="below",
+        ))
+        anns.append(dict(
+            x=card_x + CARD_W / 2, y=card_y - HEADER_H / 2,
+            text=f"<b>Group {letter}</b>",
+            showarrow=False,
+            font=dict(size=15, color="white"),
+            xanchor="center", yanchor="middle",
+        ))
+
+        # Team rows
+        for ti, team_data in enumerate(teams[:4]):
+            team = team_data["team"]
+            rank = team_data["rank"]
+            row_y_top = card_y - HEADER_H - ti * ROW_H
+            row_y_bot = row_y_top - ROW_H
+            row_mid   = (row_y_top + row_y_bot) / 2
+
+            # Row background
+            shapes.append(dict(
+                type="rect",
+                x0=card_x, y0=row_y_bot,
+                x1=card_x + CARD_W, y1=row_y_top,
+                fillcolor=ROW_COLORS.get(rank, "#555555") + "33",  # ~20% alpha
+                line=dict(color=ROW_BORDERS.get(rank, "#888888") + "55", width=0.5),
+                layer="below",
+            ))
+
+            # Rank indicator dot on the left
+            dot_colors = {1: "#2ecc71", 2: "#2ecc71", 3: "#f39c12", 4: "#e74c3c"}
+            shapes.append(dict(
+                type="circle",
+                x0=card_x + 0.10, y0=row_mid - 0.18,
+                x1=card_x + 0.46, y1=row_mid + 0.18,
+                fillcolor=dot_colors.get(rank, "#888888"),
+                line=dict(color=dot_colors.get(rank, "#888888"), width=0),
+                layer="above",
+            ))
+            # Rank number in dot
+            anns.append(dict(
+                x=card_x + 0.28, y=row_mid,
+                text=f"<b>{rank}</b>",
+                showarrow=False,
+                font=dict(size=9, color="white"),
+                xanchor="center", yanchor="middle",
+            ))
+
+            # Flag emoji
+            f = flag(team)
+            anns.append(dict(
+                x=card_x + 0.70, y=row_mid,
+                text=f,
+                showarrow=False,
+                font=dict(size=14),
+                xanchor="center", yanchor="middle",
+            ))
+
+            # Team name
+            anns.append(dict(
+                x=card_x + 0.95, y=row_mid,
+                text=team,
+                showarrow=False,
+                font=dict(size=11, color="#111111"),
+                xanchor="left", yanchor="middle",
+            ))
+
+    # Title
+    anns.append(dict(
+        x=TOTAL_W / 2, y=TOTAL_H + 0.7,
+        text="<b>FIFA World Cup 2026 — Group Stage Overview</b>",
+        showarrow=False, font=dict(size=20, color="#111111"),
+        xanchor="center", yanchor="bottom",
+    ))
+
+    # Legend
+    for lx, color, label in [
+        (0.0, "#2ecc71", "Advances (Top 2)"),
+        (3.8, "#f39c12", "Potential wild card (3rd)"),
+        (9.0, "#e74c3c", "Eliminated (4th)"),
+    ]:
+        shapes.append(dict(
+            type="circle",
+            x0=lx, y0=TOTAL_H + 0.08, x1=lx + 0.28, y1=TOTAL_H + 0.38,
+            fillcolor=color, line=dict(color=color, width=0), layer="above",
+        ))
+        anns.append(dict(
+            x=lx + 0.42, y=TOTAL_H + 0.23,
+            text=label,
+            showarrow=False, font=dict(size=11, color="#444444"),
+            xanchor="left", yanchor="middle",
+        ))
+
+    fig = go.Figure()
+    fig.update_layout(
+        shapes=shapes, annotations=anns,
+        xaxis=dict(range=[-0.3, TOTAL_W + 0.3], showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(range=[-0.4, TOTAL_H + 1.4], showgrid=False, zeroline=False,
+                   showticklabels=False, scaleanchor="x", scaleratio=0.9),
+        height=950, width=1400,
+        paper_bgcolor=TRANS, plot_bgcolor=TRANS,
+        margin=dict(t=10, b=10, l=10, r=10),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# (Figure 4 — Reach chart resumes below)
+# ---------------------------------------------------------------------------
 
 def _make_reach_chart(probs: dict, top: int = 16) -> go.Figure:
     teams_sorted = sorted(probs.items(), key=lambda x: -x[1].get("champion", 0))[:top]
@@ -530,6 +789,8 @@ def main(
         "bracket":         _make_bracket(bracket, probs),
         "champion_probs":  _make_champion_chart(probs, top=top),
         "reach_chart":     _make_reach_chart(probs, top=top),
+        "podium":          _make_podium(bracket),
+        "group_overview":  _make_group_overview(bracket),
     }
 
     for name, fig in figures.items():
