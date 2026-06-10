@@ -10,6 +10,10 @@ def parse_market_value(value_str: str | None) -> int | None:
         "€1.2bn"  -> 1_200_000_000
         "-"       -> None
     """
+    if value_str is None:
+        return None
+    if isinstance(value_str, (int, float)):
+        return int(value_str) if value_str else None
     if not value_str or value_str.strip() in ("-", "N/A", ""):
         return None
 
