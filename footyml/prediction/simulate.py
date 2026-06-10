@@ -321,7 +321,17 @@ class TournamentSimulator:
         self._path = predictions_path or default
 
     def _load(self) -> tuple[dict[str, list[dict]], dict[str, float]]:
-        """Load group-stage matches and derive team Elo from probabilities."""
+        """Load group-stage matches and derive team Elo from probabilities.
+
+        Elo priority (highest to lowest):
+          1. Historical Elo from martj42 dataset (ingest_elo_international.py)
+          2. Hardcoded FIFA-ranking prior (WC2026_FIFA_ELO)
+          3. Derived from group-stage prediction probabilities
+
+        After resolving base Elo, blends with squad market value signal
+        (national_team_mv.parquet) to correct inflated Elo for weak teams
+        (e.g., Curaçao wins only in CONCACAF → inflated martj42 Elo).
+        """
         with open(self._path) as f:
             all_preds: list[dict] = json.load(f)
 
@@ -332,10 +342,9 @@ class TournamentSimulator:
             gid = m.get("group_id", "")
             group_matches.setdefault(gid, []).append(m)
 
-        # Prefer historical Elo from ingest_elo_international.py parquet,
-        # fall back to FIFA ranking prior, then to model-derived signal.
         from footyml.config import PROCESSED_DIR
         import polars as pl
+        import math
 
         historical: dict[str, float] = {}
         parquet_path = PROCESSED_DIR / "national_team_elo.parquet"
@@ -350,33 +359,74 @@ class TournamentSimulator:
         all_teams = set(derived) | set(historical) | set(WC2026_FIFA_ELO)
         for team in all_teams:
             if team in historical:
-                # Real Elo from 32 years of international match data — trust it
                 elo[team] = historical[team]
             elif team in WC2026_FIFA_ELO:
-                # FIFA ranking prior (hardcoded)
                 elo[team] = WC2026_FIFA_ELO[team]
             else:
                 elo[team] = derived.get(team, ELO_INITIAL)
+
+        # Blend with squad market value signal to ground-truth team quality.
+        # Market values separate top-tier from weak teams far better than
+        # historical Elo (which is inflated for teams that only play weak opposition).
+        mv_path = PROCESSED_DIR / "national_team_mv.parquet"
+        if mv_path.exists():
+            mv_df = pl.read_parquet(mv_path)
+            mv: dict[str, float] = {}
+            for row in mv_df.iter_rows(named=True):
+                v = row["total_market_value_eur"]
+                if v and v > 0:
+                    mv[str(row["team"])] = float(v)
+
+            if mv:
+                # log-scale market value, normalise to Elo space.
+                # Scale factor: 10× difference in value ≈ 350 Elo points.
+                log_values = [math.log10(v) for v in mv.values()]
+                log_median = sorted(log_values)[len(log_values) // 2]
+                SCALE = 350.0
+                MV_WEIGHT = 0.40  # 40% market value, 60% historical results
+
+                for team in list(elo.keys()):
+                    if team in mv:
+                        mv_elo = ELO_INITIAL + (math.log10(mv[team]) - log_median) * SCALE
+                        elo[team] = (1.0 - MV_WEIGHT) * elo[team] + MV_WEIGHT * mv_elo
+
         return group_matches, elo
 
     def _presample_group(
         self,
         group_matches: dict[str, list[dict]],
+        elo: dict[str, float],
         n: int,
         rng: np.random.Generator,
     ) -> dict[str, np.ndarray]:
-        """Pre-sample outcome arrays of shape (n,) per match per group."""
+        """Pre-sample outcome arrays of shape (n,) per match per group.
+
+        Uses Elo-derived probabilities when the JSON has flat fallback values
+        (home_win_prob == away_win_prob ≈ 37.5), otherwise uses the JSON probs.
+        """
         group_outcomes: dict[str, np.ndarray] = {}
         for gid in sorted(group_matches.keys()):
             matches = group_matches[gid]
-            # outcomes[sim_idx, match_idx] ∈ {0=away, 1=draw, 2=home}
             arr = np.empty((n, len(matches)), dtype=np.int8)
             for mi, m in enumerate(matches):
-                h = float(m.get("home_win_prob") or 37.5) / 100.0
-                d = float(m.get("draw_prob") or 25.0) / 100.0
-                a = float(m.get("away_win_prob") or 37.5) / 100.0
-                total = h + d + a
-                probs = np.array([a / total, d / total, h / total])
+                h_raw = float(m.get("home_win_prob") or 0)
+                a_raw = float(m.get("away_win_prob") or 0)
+                # Detect flat fallback: both sides equal within 0.5pp
+                is_flat = abs(h_raw - a_raw) < 0.5
+                if is_flat:
+                    # Use historical Elo for proper probabilities
+                    home = m.get("home_team", "")
+                    away = m.get("away_team", "")
+                    p_home = _ko_p_win(home, away, elo)
+                    p_draw = 0.27  # empirical average for international football
+                    h = p_home * (1 - p_draw)
+                    a = (1 - p_home) * (1 - p_draw)
+                    d = p_draw
+                else:
+                    d_raw = float(m.get("draw_prob") or 25.0)
+                    total = h_raw + d_raw + a_raw
+                    h, d, a = h_raw / total, d_raw / total, a_raw / total
+                probs = np.array([a, d, h])
                 arr[:, mi] = rng.choice([0, 1, 2], size=n, p=probs)
             group_outcomes[gid] = arr
         return group_outcomes
@@ -398,7 +448,7 @@ class TournamentSimulator:
         group_matches, elo = self._load()
 
         # Pre-sample group-stage outcomes
-        group_outcomes = self._presample_group(group_matches, n, rng)
+        group_outcomes = self._presample_group(group_matches, elo, n, rng)
 
         # Pre-sample knockout randomness: at most 28 ko matches per sim (4×7=28 within paths + 3 SF/3rd/Final)
         ko_randoms = rng.random(size=(n, 35))
@@ -463,9 +513,9 @@ class TournamentSimulator:
             matches = group_matches[gid]
             outcomes = np.array([
                 np.argmax([
-                    float(m.get("away_win_prob") or 37.5),
-                    float(m.get("draw_prob") or 25.0),
-                    float(m.get("home_win_prob") or 37.5),
+                    1.0 - _ko_p_win(m.get("home_team", ""), m.get("away_team", ""), elo),
+                    0.27,
+                    _ko_p_win(m.get("home_team", ""), m.get("away_team", ""), elo),
                 ])
                 for m in matches
             ], dtype=np.int8)
