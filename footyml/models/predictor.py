@@ -26,7 +26,11 @@ class TabPFNMatchPredictor(ClassifierMixin):
     def _build_clf(self) -> object:
         from tabpfn import TabPFNClassifier  # type: ignore[import]
 
-        return TabPFNClassifier(device=self.device, n_estimators=self.n_estimators)
+        return TabPFNClassifier(
+            device=self.device,
+            n_estimators=self.n_estimators,
+            ignore_pretraining_limits=True,
+        )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "TabPFNMatchPredictor":
         self._clf = self._build_clf()
