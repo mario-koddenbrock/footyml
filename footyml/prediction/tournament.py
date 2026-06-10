@@ -200,12 +200,36 @@ class TournamentPredictor:
         away_elo = ELO_INITIAL
 
         if len(elo_df) > 0 and "club_id" in elo_df.columns:
-            home_rows = elo_df.filter(pl.col("club_id") == home_id)
-            away_rows = elo_df.filter(pl.col("club_id") == away_id)
-            if len(home_rows) > 0:
-                home_elo = float(home_rows.sort("date")["elo"][-1])
-            if len(away_rows) > 0:
-                away_elo = float(away_rows.sort("date")["elo"][-1])
+            # Try fd_ club_id first, then fall back to team name (from ingest_elo_international.py)
+            def _latest_elo(cid: str, name: str) -> float | None:
+                rows = elo_df.filter(pl.col("club_id") == cid)
+                if len(rows) == 0:
+                    rows = elo_df.filter(pl.col("club_id") == name)
+                return float(rows.sort("date")["elo"][-1]) if len(rows) > 0 else None
+
+            home_name = str(home_id)  # fallback; overwritten below if available
+            away_name = str(away_id)
+
+            # Look up display names from matches table
+            m_df = self._store.query(
+                f"SELECT home_club_name FROM matches WHERE home_club_id = '{home_id}' "
+                f"AND home_club_name IS NOT NULL LIMIT 1"
+            )
+            if len(m_df) > 0:
+                home_name = str(m_df["home_club_name"][0])
+            m_df = self._store.query(
+                f"SELECT away_club_name FROM matches WHERE away_club_id = '{away_id}' "
+                f"AND away_club_name IS NOT NULL LIMIT 1"
+            )
+            if len(m_df) > 0:
+                away_name = str(m_df["away_club_name"][0])
+
+            e = _latest_elo(home_id, home_name)
+            if e is not None:
+                home_elo = e
+            e = _latest_elo(away_id, away_name)
+            if e is not None:
+                away_elo = e
 
         bonus = HOME_ADVANTAGE_ELO if venue_type == VENUE_HOME_A else 0.0
         p_home = _expected_score(home_elo + bonus, away_elo)
