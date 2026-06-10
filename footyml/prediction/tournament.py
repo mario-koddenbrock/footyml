@@ -143,36 +143,68 @@ class TournamentPredictor:
             console.print("[yellow]No model loaded — returning fixtures only (no predictions)[/yellow]")
             return _format_fixtures_only(upcoming)
 
-        # Build features for all matches in the competition (so we have context for form etc.)
+        # For completed matches in competition: use full features
         features_df = self._pipeline.build(
             competition_id=competition,
             tournament_mode=True,
         )
 
+        # For upcoming matches: build partial features (Elo + MarketValue)
+        # using build_upcoming() so TabPFN gets real signal instead of Elo fallback
+        upcoming_feats = self._pipeline.build_upcoming(upcoming)
+
+        # Load model feature names to align columns
+        feat_names = self._predictor.feature_names_
+        if not feat_names:
+            # Fall back to inferring from existing features table
+            from footyml.features.pipeline import _get_full_feature_columns
+            feat_names = [c for c in _get_full_feature_columns(self._store) if c != "game_id"]
+
+        def _proba_from_row(feat_row: pl.DataFrame, method: str) -> dict[str, object]:
+            skip = {"game_id"}
+            if feat_names:
+                # Align to the exact column order the model was trained on
+                aligned = []
+                for col in feat_names:
+                    if col in feat_row.columns:
+                        aligned.append(pl.col(col))
+                    else:
+                        aligned.append(pl.lit(None).cast(pl.Float64).alias(col))
+                feat_row = feat_row.select(aligned)
+            else:
+                feat_cols = [c for c in feat_row.columns if c not in skip]
+                feat_row = feat_row.select(feat_cols)
+            X = feat_row.to_numpy().astype(np.float32)
+            proba = self._predictor.predict_proba(X)[0]
+            return {
+                "home_win_prob": round(float(proba[2]) * 100, 1),
+                "draw_prob": round(float(proba[1]) * 100, 1),
+                "away_win_prob": round(float(proba[0]) * 100, 1),
+                "predicted_result": RESULT_LABELS[int(np.argmax(proba))],
+                "method": method,
+            }
+
         predictions = []
         for row in upcoming.iter_rows(named=True):
             gid = str(row["game_id"])
-            feat_row = features_df.filter(pl.col("game_id") == gid)
 
-            if len(feat_row) == 0:
-                # Upcoming match not in features yet — use Elo-only fallback
-                pred = self._elo_fallback_prediction(
-                    home_id=str(row.get("home_club_id", "")),
-                    away_id=str(row.get("away_club_id", "")),
-                    venue_type=str(row.get("venue_type", "neutral")),
-                )
+            # Prefer completed-match features (post-competition features when available)
+            feat_row = features_df.filter(pl.col("game_id") == gid)
+            if len(feat_row) > 0:
+                pred = _proba_from_row(feat_row, "tabpfn")
             else:
-                skip = {"game_id"}
-                feat_cols = [c for c in feat_row.columns if c not in skip]
-                X = feat_row.select(feat_cols).to_numpy().astype(np.float32)
-                proba = self._predictor.predict_proba(X)[0]
-                pred = {
-                    "home_win_prob": round(float(proba[2]) * 100, 1),
-                    "draw_prob": round(float(proba[1]) * 100, 1),
-                    "away_win_prob": round(float(proba[0]) * 100, 1),
-                    "predicted_result": RESULT_LABELS[int(np.argmax(proba))],
-                    "method": "tabpfn",
-                }
+                # Use Elo + MV features from build_upcoming()
+                upcoming_row = upcoming_feats.filter(pl.col("game_id") == gid)
+                if len(upcoming_row) > 0:
+                    pred = _proba_from_row(upcoming_row, "tabpfn_partial")
+                else:
+                    pred = self._elo_fallback_prediction(
+                        home_id=str(row.get("home_club_id", "")),
+                        away_id=str(row.get("away_club_id", "")),
+                        venue_type=str(row.get("venue_type", "neutral")),
+                        home_name=str(row.get("home_club_name", "") or ""),
+                        away_name=str(row.get("away_club_name", "") or ""),
+                    )
 
             predictions.append(
                 {
@@ -190,7 +222,8 @@ class TournamentPredictor:
         return sorted(predictions, key=lambda x: str(x.get("date", "")))
 
     def _elo_fallback_prediction(
-        self, home_id: str, away_id: str, venue_type: str
+        self, home_id: str, away_id: str, venue_type: str,
+        home_name: str = "", away_name: str = "",
     ) -> dict[str, object]:
         """Simple Elo-based probability estimate when full features unavailable."""
         from footyml.config import ELO_INITIAL, HOME_ADVANTAGE_ELO, VENUE_HOME_A
@@ -200,34 +233,34 @@ class TournamentPredictor:
         away_elo = ELO_INITIAL
 
         if len(elo_df) > 0 and "club_id" in elo_df.columns:
-            # Try fd_ club_id first, then fall back to team name (from ingest_elo_international.py)
-            def _latest_elo(cid: str, name: str) -> float | None:
-                rows = elo_df.filter(pl.col("club_id") == cid)
-                if len(rows) == 0:
-                    rows = elo_df.filter(pl.col("club_id") == name)
-                return float(rows.sort("date")["elo"][-1]) if len(rows) > 0 else None
+            def _latest_elo(*candidates: str) -> float | None:
+                for cid in candidates:
+                    if not cid:
+                        continue
+                    rows = elo_df.filter(pl.col("club_id") == cid)
+                    if len(rows) > 0:
+                        return float(rows.sort("date")["elo"][-1])
+                return None
 
-            home_name = str(home_id)  # fallback; overwritten below if available
-            away_name = str(away_id)
+            # Priority: provided display name > fd_ id > DB lookup via matches table
+            if not home_name:
+                m_df = self._store.query(
+                    f"SELECT home_club_name FROM matches WHERE home_club_id = '{home_id}' "
+                    f"AND home_club_name IS NOT NULL LIMIT 1"
+                )
+                home_name = str(m_df["home_club_name"][0]) if len(m_df) > 0 else ""
 
-            # Look up display names from matches table
-            m_df = self._store.query(
-                f"SELECT home_club_name FROM matches WHERE home_club_id = '{home_id}' "
-                f"AND home_club_name IS NOT NULL LIMIT 1"
-            )
-            if len(m_df) > 0:
-                home_name = str(m_df["home_club_name"][0])
-            m_df = self._store.query(
-                f"SELECT away_club_name FROM matches WHERE away_club_id = '{away_id}' "
-                f"AND away_club_name IS NOT NULL LIMIT 1"
-            )
-            if len(m_df) > 0:
-                away_name = str(m_df["away_club_name"][0])
+            if not away_name:
+                m_df = self._store.query(
+                    f"SELECT away_club_name FROM matches WHERE away_club_id = '{away_id}' "
+                    f"AND away_club_name IS NOT NULL LIMIT 1"
+                )
+                away_name = str(m_df["away_club_name"][0]) if len(m_df) > 0 else ""
 
-            e = _latest_elo(home_id, home_name)
+            e = _latest_elo(home_name, home_id)
             if e is not None:
                 home_elo = e
-            e = _latest_elo(away_id, away_name)
+            e = _latest_elo(away_name, away_id)
             if e is not None:
                 away_elo = e
 
