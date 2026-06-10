@@ -58,10 +58,11 @@ async def _run(
     from footyml.prediction.tournament import TournamentPredictor
 
     if model_path is None:
-        # Prefer all-leagues model, then competition-specific, then any tabpfn model
+        # Prefer international model for tournament prediction, then any other model
         candidates = (
-            sorted(MODELS_DIR.glob("tabpfn_all_*.pkl"))
+            sorted(MODELS_DIR.glob("tabpfn_international.pkl"))
             or sorted(MODELS_DIR.glob(f"tabpfn_{competition}_*.pkl"))
+            or sorted(MODELS_DIR.glob("tabpfn_all_*.pkl"))
             or sorted(MODELS_DIR.glob("tabpfn_*.pkl"))
         )
         if candidates:
