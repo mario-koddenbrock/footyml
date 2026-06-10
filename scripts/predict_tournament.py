@@ -58,15 +58,20 @@ async def _run(
     from footyml.prediction.tournament import TournamentPredictor
 
     if model_path is None:
-        candidates = sorted(MODELS_DIR.glob(f"tabpfn_{competition}_*.pkl"))
+        # Prefer all-leagues model, then competition-specific, then any tabpfn model
+        candidates = (
+            sorted(MODELS_DIR.glob("tabpfn_all_*.pkl"))
+            or sorted(MODELS_DIR.glob(f"tabpfn_{competition}_*.pkl"))
+            or sorted(MODELS_DIR.glob("tabpfn_*.pkl"))
+        )
         if candidates:
             model_path = candidates[-1]
             console.print(f"Using model: {model_path.name}")
         else:
             console.print(
-                f"[yellow]No model found for {competition}. Running without predictions (fixtures only).[/yellow]"
+                f"[yellow]No model found. Running without predictions (fixtures only).[/yellow]"
             )
-            console.print(f"  Train one: python scripts/train.py --league {competition} --season <year>")
+            console.print("  Train one: python scripts/train.py --league all --season 2025")
 
     async with TournamentPredictor(model_path=model_path) as predictor:
         if list_competitions:
@@ -95,16 +100,23 @@ async def _run(
 
     _print_table(predictions, competition)
 
-    if export:
-        import polars as pl
-        pl.DataFrame([{k: v for k, v in p.items()} for p in predictions]).write_parquet(export)
-        console.print(f"[dim]Exported to {export}[/dim]")
-    else:
-        default_out = Path(f"data/predictions/{competition}_upcoming.parquet")
-        default_out.parent.mkdir(parents=True, exist_ok=True)
-        import polars as pl
-        pl.DataFrame([{k: v for k, v in p.items()} for p in predictions]).write_parquet(default_out)
-        console.print(f"[dim]Predictions saved to {default_out}[/dim]")
+    import json
+    import polars as pl
+
+    out_path = export or Path(f"data/predictions/{competition}_upcoming.parquet")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Always write Parquet
+    parquet_path = out_path.with_suffix(".parquet")
+    pl.DataFrame([{k: v for k, v in p.items()} for p in predictions]).write_parquet(parquet_path)
+
+    # Also write JSON for easy transfer / inspection
+    json_path = out_path.with_suffix(".json")
+    with open(json_path, "w") as f:
+        json.dump(predictions, f, indent=2, default=str)
+
+    console.print(f"[dim]Predictions saved → {parquet_path}[/dim]")
+    console.print(f"[dim]                  → {json_path}[/dim]")
 
 
 def _print_table(predictions: list[dict], competition: str) -> None:
