@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FootyML data files (large, not committed)
+data/raw/
+data/processed/
+data/models/
+data/predictions/
+data/*.duckdb
+data/*.duckdb.wal
+
+# uv
+.venv/
+uv.lock
