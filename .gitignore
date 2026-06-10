@@ -228,3 +228,4 @@ data/*.duckdb.wal
 # uv
 .venv/
 uv.lock
+.logs/
