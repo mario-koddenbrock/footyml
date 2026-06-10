@@ -23,7 +23,8 @@ class TransfermarktFetcher:
 
     async def fetch_competition_clubs(self, competition_id: str, season_id: str) -> pl.DataFrame:
         key = self._cache.make_key("competition_clubs", competition_id=competition_id, season_id=season_id)
-        if cached := self._cache.get(key):
+        cached = self._cache.get(key)
+        if cached is not None:
             return cached
 
         data = await self._client.get(
@@ -50,7 +51,8 @@ class TransfermarktFetcher:
 
     async def fetch_club_games(self, club_id: str, season_id: str) -> pl.DataFrame:
         key = self._cache.make_key("club_games", club_id=club_id, season_id=season_id)
-        if cached := self._cache.get(key):
+        cached = self._cache.get(key)
+        if cached is not None:
             return cached
 
         data = await self._client.get(
@@ -86,7 +88,8 @@ class TransfermarktFetcher:
 
     async def fetch_club_profile(self, club_id: str) -> pl.DataFrame:
         key = self._cache.make_key("club_profile", club_id=club_id)
-        if cached := self._cache.get(key):
+        cached = self._cache.get(key)
+        if cached is not None:
             return cached
 
         data = await self._client.get(f"/clubs/{club_id}/profile")
@@ -109,7 +112,8 @@ class TransfermarktFetcher:
 
     async def fetch_squad_market_values(self, club_id: str, season_id: str) -> pl.DataFrame:
         key = self._cache.make_key("squad_mv", club_id=club_id, season_id=season_id)
-        if cached := self._cache.get(key):
+        cached = self._cache.get(key)
+        if cached is not None:
             return cached
 
         data = await self._client.get(
@@ -139,7 +143,8 @@ class TransfermarktFetcher:
 
     async def fetch_club_transfers(self, club_id: str, season_id: str) -> pl.DataFrame:
         key = self._cache.make_key("club_transfers", club_id=club_id, season_id=season_id)
-        if cached := self._cache.get(key):
+        cached = self._cache.get(key)
+        if cached is not None:
             return cached
 
         data = await self._client.get(
