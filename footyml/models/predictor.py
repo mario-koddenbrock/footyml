@@ -62,4 +62,8 @@ class TabPFNMatchPredictor(ClassifierMixin):
         predictor = cls()
         with open(path, "rb") as f:
             predictor._clf = pickle.load(f)
+        # Load companion feature names if they exist
+        names_path = Path(str(path).replace(".pkl", ".features.txt"))
+        if names_path.exists():
+            predictor.feature_names_ = names_path.read_text().splitlines()
         return predictor
