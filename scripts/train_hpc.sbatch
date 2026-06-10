@@ -25,30 +25,31 @@ echo "Started:      $(date)"
 echo "============================================================"
 
 source ~/.bashrc
-conda activate footyml   # <-- change to your conda env name
+export PATH="$HOME/.local/bin:$PATH"   # ensure uv is on PATH
+
+cd "$(dirname "$0")/.."   # run from repo root regardless of where sbatch was called
+
+echo "==> Installing dependencies with uv ..."
+uv sync --extra dev
 
 if [ $? -ne 0 ]; then
-    echo "ERROR: could not activate conda environment"
+    echo "ERROR: uv sync failed"
     exit 1
 fi
 
-which python
-python --version
-
-python -c "import torch; print('CUDA available:', torch.cuda.is_available()); \
-           print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
+uv run python --version
+uv run python -c "import torch; print('CUDA available:', torch.cuda.is_available()); \
+                  print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
 
 set -e
-mkdir -p .logs data/models
-
-cd "$(dirname "$0")/.."   # run from repo root regardless of where sbatch was called
+mkdir -p .logs data/models data/predictions
 
 # ---------------------------------------------------------------------------
 # Step 1 — Train TabPFN on all leagues (GPU, no sample limit)
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Step 1: Training ---"
-python scripts/train.py \
+uv run python scripts/train.py \
     --league all \
     --season 2025 \
     --train-from 2015 \
@@ -60,7 +61,7 @@ python scripts/train.py \
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Step 2: WC 2026 predictions ---"
-python scripts/predict_tournament.py \
+uv run python scripts/predict_tournament.py \
     --competition WC \
     --season 2026 \
     --export data/predictions/wc2026_upcoming
