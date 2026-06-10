@@ -558,12 +558,13 @@ def _make_group_overview(bracket: dict) -> go.Figure:
 
     # Row colors by rank
     ROW_COLORS = {
-        1: "#1a6b3a",   # dark green — advances directly
-        2: "#1a6b3a",   # dark green — advances directly
-        3: "#7a5c00",   # amber — potential wild card
-        4: "#5a1a1a",   # dark red — eliminated
+        1: "rgba(26,107,58,0.15)",
+        2: "rgba(26,107,58,0.15)",
+        3: "rgba(122,92,0,0.15)",
+        4: "rgba(90,26,26,0.10)",
     }
-    ROW_BORDERS = {1: "#2ecc71", 2: "#2ecc71", 3: "#f39c12", 4: "#c0392b"}
+    ROW_BORDERS = {1: "rgba(46,204,113,0.4)", 2: "rgba(46,204,113,0.4)",
+                   3: "rgba(243,156,18,0.4)", 4: "rgba(192,57,43,0.3)"}
 
     shapes: list[dict] = []
     anns: list[dict] = []
@@ -629,8 +630,8 @@ def _make_group_overview(bracket: dict) -> go.Figure:
                 type="rect",
                 x0=card_x, y0=row_y_bot,
                 x1=card_x + CARD_W, y1=row_y_top,
-                fillcolor=ROW_COLORS.get(rank, "#555555") + "33",  # ~20% alpha
-                line=dict(color=ROW_BORDERS.get(rank, "#888888") + "55", width=0.5),
+                fillcolor=ROW_COLORS.get(rank, "rgba(80,80,80,0.1)"),
+                line=dict(color=ROW_BORDERS.get(rank, "rgba(136,136,136,0.3)"), width=0.5),
                 layer="below",
             ))
 
