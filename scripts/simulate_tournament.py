@@ -1,4 +1,4 @@
-"""Simulate the full FIFA World Cup 2026 and predict the winner.
+"""Simulate the full World Cup 2026 and predict the winner.
 
 Usage:
     python scripts/simulate_tournament.py
