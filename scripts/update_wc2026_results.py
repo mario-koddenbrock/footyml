@@ -9,9 +9,14 @@ Requirements:
     Koddenbrock/WorldcupPredictionGame-storage)
 
 Usage:
-    python scripts/update_wc2026_results.py
-    python scripts/update_wc2026_results.py --dry-run   # print only, no upload
-    python scripts/update_wc2026_results.py --local     # save locally only
+    python scripts/update_wc2026_results.py               # clears cache + fetches live
+    python scripts/update_wc2026_results.py --dry-run     # print only, no upload
+    python scripts/update_wc2026_results.py --local       # save locally only
+    python scripts/update_wc2026_results.py --no-refresh  # reuse cached responses
+
+By default the script clears the cached WC responses first (the football-data.org
+cache has no TTL, so a stale cache otherwise replays the matches finished at the
+time of the first fetch). Pass --no-refresh to reuse the cache.
 """
 from __future__ import annotations
 
@@ -254,8 +259,17 @@ def main(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print results only, don't upload"),
     local:   bool = typer.Option(False, "--local",   help="Save locally without uploading to HF"),
     season:  int  = typer.Option(SEASON, "--season", help="WC season year"),
+    refresh: bool = typer.Option(
+        True, "--refresh/--no-refresh",
+        help="Clear the cached WC responses before fetching (default: on)",
+    ),
 ) -> None:
     console.rule("[bold]WC 2026 Results Updater")
+
+    # Clear stale cache so we fetch live results (cache has no TTL).
+    if refresh:
+        n = clear_cache()
+        console.print(f"Cleared [bold]{n}[/bold] cached WC response(s).")
 
     # Fetch
     console.print("Fetching completed matches from football-data.org…")
