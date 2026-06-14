@@ -43,6 +43,12 @@ HF_REPO   = "Koddenbrock/WorldcupPredictionGame-storage"
 HF_FILE   = "results/match_results.json"
 LOCAL_OUT = Path("data/predictions/wc2026_results.json")
 
+# football-data.org responses are cached permanently (no TTL), so a stale cache
+# keeps replaying the matches finished at first fetch. Clear it before fetching.
+from footyml.config import RAW_DIR  # noqa: E402
+
+FD_CACHE_DIR = RAW_DIR / "football_data_api"
+
 # football-data.org stage → scoring.py stage key
 _STAGE_MAP: dict[str, str] = {
     "GROUP_STAGE":    "GROUP_STAGE",
@@ -122,6 +128,16 @@ def ko_winner_from_api(match_row: dict, home_name: str, away_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Main fetch + transform
 # ---------------------------------------------------------------------------
+
+def clear_cache() -> int:
+    """Delete cached WC match responses so the next fetch hits the live API."""
+    if not FD_CACHE_DIR.exists():
+        return 0
+    files = list(FD_CACHE_DIR.glob(f"fd_matches_{COMPETITION}*.parquet"))
+    for f in files:
+        f.unlink()
+    return len(files)
+
 
 async def fetch_results() -> list[dict]:
     """Fetch all completed WC 2026 matches from football-data.org."""
