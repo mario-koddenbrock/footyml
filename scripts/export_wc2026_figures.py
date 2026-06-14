@@ -126,7 +126,7 @@ def _make_group_standings(bracket: dict, probs: dict) -> go.Figure:
         fig.update_yaxes(autorange="reversed", tickfont=dict(size=10), row=row, col=col)
 
     fig.update_layout(
-        title=dict(text="FIFA World Cup 2026 — Group Stage Advancement Probabilities",
+        title=dict(text="World Cup 2026 — Group Stage Advancement Probabilities",
                    font=dict(size=17, color="#333333")),
         height=700, width=1400,
         paper_bgcolor=TRANS, plot_bgcolor=TRANS,
@@ -388,7 +388,7 @@ def _make_bracket(bracket: dict, probs: dict) -> go.Figure:
     # ---- Title ----
     annotations.append(dict(
         x=X_FIN, y=label_y + 1.2,
-        text="<b>FIFA World Cup 2026 — Most Likely Bracket</b>",
+        text="<b>World Cup 2026 — Most Likely Bracket</b>",
         showarrow=False,
         font=dict(color="#333333", size=19),
         xanchor="center", yanchor="bottom",
@@ -429,7 +429,7 @@ def _make_champion_chart(probs: dict, top: int = 20) -> go.Figure:
         hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        title=dict(text=f"FIFA World Cup 2026 — Champion Probability (Top {top})",
+        title=dict(text=f"World Cup 2026 — Champion Probability (Top {top})",
                    font=dict(size=17, color="#333333")),
         xaxis=dict(title="Champion probability (%)", range=[0, max(champ) * 1.22],
                    color="#333333"),
@@ -515,7 +515,7 @@ def _make_podium(probs: dict) -> go.Figure:
 
     # Title (above the tallest stack: gold top=4.2, medal at 6.25)
     anns.append(dict(
-        x=5.5, y=7.5, text="<b>FIFA World Cup 2026</b>",
+        x=5.5, y=7.5, text="<b>World Cup 2026</b>",
         showarrow=False, font=dict(size=26, color="#111111"),
         xanchor="center", yanchor="bottom",
     ))
@@ -663,7 +663,7 @@ def _make_group_overview(bracket: dict) -> go.Figure:
     # Title
     anns.append(dict(
         x=TOTAL_W / 2, y=TITLE_Y,
-        text="<b>FIFA World Cup 2026 — Group Stage Overview</b>",
+        text="<b>World Cup 2026 — Group Stage Overview</b>",
         showarrow=False, font=dict(size=28, color="#111111"),
         xanchor="center", yanchor="bottom",
     ))
@@ -739,7 +739,7 @@ def _make_reach_chart(probs: dict, top: int = 16) -> go.Figure:
 
     fig.update_layout(
         barmode="stack",
-        title=dict(text=f"FIFA World Cup 2026 — Tournament Reach Probabilities (Top {top})",
+        title=dict(text=f"World Cup 2026 — Tournament Reach Probabilities (Top {top})",
                    font=dict(size=17, color="#333333")),
         xaxis=dict(title="Probability (%)", range=[0, 105], color="#333333"),
         yaxis=dict(autorange="reversed", color="#333333"),
