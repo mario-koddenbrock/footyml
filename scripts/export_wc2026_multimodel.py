@@ -397,7 +397,7 @@ def make_bracket_for_model(bracket: dict, pseudo_probs: dict, model_label: str) 
     fig = _make_bracket(bracket, pseudo_probs)
     for ann in fig.layout.annotations:
         if "Most Likely Bracket" in str(ann.text):
-            ann.text = f"<b>FIFA World Cup 2026 — {model_label} Bracket</b>"
+            ann.text = f"<b>World Cup 2026 — {model_label} Bracket</b>"
             break
     return fig
 
@@ -511,7 +511,7 @@ def make_podium_comparison(model_brackets: dict[str, dict]) -> go.Figure:
     title_y = TOTAL_H + HEADER_H + 1.0
     anns.append(dict(
         x=(TOTAL_W - GAP) / 2, y=title_y,
-        text="<b>FIFA World Cup 2026 — Model Podium Predictions</b>",
+        text="<b>World Cup 2026 — Model Podium Predictions</b>",
         showarrow=False,
         font=dict(size=24, color="#111111"),
         xanchor="center", yanchor="bottom",
@@ -693,7 +693,7 @@ def make_champion_votes(model_brackets: dict[str, dict]) -> go.Figure:
     title_y = TOP_H + 1.0
     anns.append(dict(
         x=(total_width - CELL_W / 2) / 2, y=title_y,
-        text="<b>FIFA World Cup 2026 — Podium Consensus Across Models</b>",
+        text="<b>World Cup 2026 — Podium Consensus Across Models</b>",
         showarrow=False,
         font=dict(size=22, color="#111111"),
         xanchor="center", yanchor="bottom",
